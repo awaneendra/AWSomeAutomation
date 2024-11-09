@@ -4,13 +4,11 @@ Description: >
   S3, and CloudFront (commented). Perfect for learning AWS architecture concepts.
 
 Parameters:
-  # VPC Configuration Parameters
   VpcCIDR:
     Type: String
     Default: 10.0.0.0/16
     Description: CIDR block for the VPC
   
-  # EC2 Configuration Parameters
   InstanceType:
     Type: String
     Default: t2.micro
@@ -21,14 +19,6 @@ Parameters:
     Description: Name of an existing EC2 KeyPair for SSH access
 
 Resources:
-  #############################################
-  # VPC and Networking Components
-  # This section creates:
-  # 1. VPC with DNS support
-  # 2. Internet Gateway
-  # 3. Public, Private, and Database Subnets
-  # 4. Route Tables and associations
-  #############################################
   MainVPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -39,17 +29,15 @@ Resources:
         - Key: Name
           Value: Main VPC
 
-  # Internet Gateway for public internet access
   InternetGateway:
     Type: AWS::EC2::InternetGateway
-  
+
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref MainVPC
       InternetGatewayId: !Ref InternetGateway
 
-  # Public Subnet 1 in AZ1
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -61,7 +49,17 @@ Resources:
         - Key: Name
           Value: Public Subnet 1
 
-  # Private Subnet 1 for Application tier
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 2
+
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -72,7 +70,6 @@ Resources:
         - Key: Name
           Value: Private Subnet 1
 
-  # Database Subnet 1
   DBSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -83,7 +80,6 @@ Resources:
         - Key: Name
           Value: DB Subnet 1
 
-  # NAT Gateway and EIP for private subnet internet access
   NATGatewayEIP:
     Type: AWS::EC2::EIP
     DependsOn: AttachGateway
@@ -96,7 +92,6 @@ Resources:
       AllocationId: !GetAtt NATGatewayEIP.AllocationId
       SubnetId: !Ref PublicSubnet1
 
-  # Route Tables
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -113,7 +108,6 @@ Resources:
         - Key: Name
           Value: Private Route Table
 
-  # Routes
   PublicRoute:
     Type: AWS::EC2::Route
     DependsOn: AttachGateway
@@ -129,11 +123,16 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NATGateway
 
-  # Route Table Associations
   PublicSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
   PrivateSubnet1RouteTableAssociation:
@@ -142,14 +141,6 @@ Resources:
       SubnetId: !Ref PrivateSubnet1
       RouteTableId: !Ref PrivateRouteTable
 
-  #############################################
-  # Security Groups
-  # Creating security groups for:
-  # 1. ALB (allows HTTP from anywhere)
-  # 2. Web tier (allows traffic from ALB)
-  # 3. App tier (allows traffic from web tier)
-  # 4. DB tier (allows traffic from app tier)
-  #############################################
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -172,18 +163,12 @@ Resources:
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
-  #############################################
-  # Application Load Balancer
-  # Creates:
-  # 1. ALB
-  # 2. Target Group
-  # 3. Listener
-  #############################################
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Subnets:
         - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
       SecurityGroups:
         - !Ref ALBSecurityGroup
       Tags:
@@ -212,12 +197,6 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref ALBTargetGroup
 
-  #############################################
-  # S3 Bucket for Static Content
-  # Creates:
-  # 1. S3 Bucket
-  # 2. Bucket Policy for public read access
-  #############################################
   StaticContentBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -244,46 +223,11 @@ Resources:
             Action: s3:GetObject
             Resource: !Sub arn:aws:s3:::${StaticContentBucket}/*
 
-  #############################################
-  # CloudFront Distribution (Commented)
-  # Uncomment this section to demonstrate CDN capabilities
-  #############################################
-  # CloudFrontDistribution:
-  #   Type: AWS::CloudFront::Distribution
-  #   Properties:
-  #     DistributionConfig:
-  #       Enabled: true
-  #       DefaultCacheBehavior:
-  #         TargetOriginId: S3Origin
-  #         ViewerProtocolPolicy: redirect-to-https
-  #         AllowedMethods:
-  #           - GET
-  #           - HEAD
-  #         CachedMethods:
-  #           - GET
-  #           - HEAD
-  #         ForwardedValues:
-  #           QueryString: false
-  #           Cookies:
-  #             Forward: none
-  #       Origins:
-  #         - DomainName: !GetAtt StaticContentBucket.DomainName
-  #           Id: S3Origin
-  #           S3OriginConfig:
-  #             OriginAccessIdentity: ''
-  #       PriceClass: PriceClass_100
-
-  #############################################
-  # EC2 Instance for Web Tier
-  # Creates:
-  # 1. Launch Template
-  # 2. Auto Scaling Group
-  #############################################
   WebServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        ImageId: ami-063d43db0594b521b  # Amazon Linux 2 AMI ID (update as needed)
+        ImageId: ami-063d43db0594b521b  # Corrected AMI ID
         InstanceType: !Ref InstanceType
         SecurityGroupIds:
           - !Ref WebTierSecurityGroup
@@ -301,6 +245,7 @@ Resources:
     Properties:
       VPCZoneIdentifier:
         - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
       LaunchTemplate:
         LaunchTemplateId: !Ref WebServerLaunchTemplate
         Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
