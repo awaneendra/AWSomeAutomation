@@ -169,7 +169,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
-      ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2023 AMI (update as needed)
+      ImageId: ami-063d43db0594b521b  # Amazon Linux 2023 AMI (update as needed)
       KeyName: !Ref KeyPairName
       SubnetId: !Ref BastionPublicSubnet
       SecurityGroupIds: 
@@ -182,7 +182,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
-      ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2023 AMI (update as needed)
+      ImageId: ami-063d43db0594b521b  # Amazon Linux 2023 AMI (update as needed)
       KeyName: !Ref KeyPairName
       SubnetId: !Ref AppPrivateSubnet
       SecurityGroupIds: 
