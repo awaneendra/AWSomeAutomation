@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  This template creates a 3-tier web application infrastructure including VPC, EC2, ALB, 
+  RDS, S3, and CloudFront (commented). Perfect for learning AWS architecture concepts.
+
+Parameters:
+  # VPC Configuration Parameters
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for the VPC
+  
+  # EC2 Configuration Parameters
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: EC2 instance type for web and app servers
+    
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair for SSH access
+
+  # Database Configuration Parameters
+  DBName:
+    Type: String
+    Default: myappdb
+    Description: Database name
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
+  DBUser:
+    Type: String
+    Default: admin
+    Description: Database admin username
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Database admin password
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+
+Resources:
+  # [Previous VPC and Networking Components remain the same until Security Groups]
+
+  #############################################
+  # Enhanced Security Groups
+  # Adding Database Security Group
+  #############################################
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  WebTierSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Web Tier
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0  # In production, restrict to your IP
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebTierSecurityGroup
+
+  #############################################
+  # RDS Instance
+  # Creates:
+  # 1. DB Subnet Group
+  # 2. RDS Instance
+  #############################################
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !Ref DBSubnet1
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref DBName
+      Engine: mysql
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '20'
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+    DeletionPolicy: Snapshot
+
+  #############################################
+  # Enhanced EC2 Configuration
+  # Updates:
+  # 1. Launch Template with enhanced user data
+  # 2. Installs MySQL client and PHP
+  # 3. Creates a test page showing DB connection
+  #############################################
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2 AMI ID (update as needed)
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref WebTierSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # Update system
+            yum update -y
+            
+            # Install Apache, PHP, and MySQL client
+            yum install -y httpd php php-mysqlnd mysql
+            
+            # Start and enable Apache
+            systemctl start httpd
+            systemctl enable httpd
+            
+            # Create a PHP info page
+            echo "<?php phpinfo(); ?>" > /var/www/html/phpinfo.php
+            
+            # Create test page that connects to RDS
+            cat << 'EOF' > /var/www/html/index.php
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>AWS 3-Tier Application Demo</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 40px; }
+                    .status { padding: 20px; border-radius: 5px; margin: 20px 0; }
+                    .success { background-color: #dff0d8; color: #3c763d; }
+                    .error { background-color: #f2dede; color: #a94442; }
+                </style>
+            </head>
+            <body>
+                <h1>AWS 3-Tier Application Demo</h1>
+                <?php
+                $dbhost = '${RDSInstance.Endpoint.Address}';
+                $dbuser = '${DBUser}';
+                $dbpass = '${DBPassword}';
+                $dbname = '${DBName}';
+
+                // Create connection
+                $conn = new mysqli($dbhost, $dbuser, $dbpass, $dbname);
+
+                // Check connection
+                if ($conn->connect_error) {
+                    echo '<div class="status error">';
+                    echo '<h2>Database Connection Failed</h2>';
+                    echo '<p>Error: ' . $conn->connect_error . '</p>';
+                    echo '</div>';
+                } else {
+                    echo '<div class="status success">';
+                    echo '<h2>Successfully Connected to RDS Database</h2>';
+                    echo '<p>Connected to: ' . $dbhost . '</p>';
+                    echo '<p>Database: ' . $dbname . '</p>';
+                    
+                    // Create test table if it doesn't exist
+                    $sql = "CREATE TABLE IF NOT EXISTS test_table (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        message VARCHAR(255),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )";
+                    
+                    if ($conn->query($sql) === TRUE) {
+                        // Insert a test message
+                        $insert = "INSERT INTO test_table (message) VALUES ('Hello from RDS!')";
+                        $conn->query($insert);
+                        
+                        // Display records
+                        $result = $conn->query("SELECT * FROM test_table ORDER BY created_at DESC LIMIT 5");
+                        if ($result->num_rows > 0) {
+                            echo '<h3>Recent Database Entries:</h3>';
+                            echo '<ul>';
+                            while($row = $result->fetch_assoc()) {
+                                echo '<li>' . htmlspecialchars($row['message']) . 
+                                     ' (Added: ' . $row['created_at'] . ')</li>';
+                            }
+                            echo '</ul>';
+                        }
+                    }
+                    echo '</div>';
+                }
+                $conn->close();
+                ?>
+                
+                <div>
+                    <h2>Instance Metadata:</h2>
+                    <?php
+                    $instance_id = file_get_contents('http://169.254.169.254/latest/meta-data/instance-id');
+                    $az = file_get_contents('http://169.254.169.254/latest/meta-data/placement/availability-zone');
+                    echo "<p>Instance ID: " . $instance_id . "</p>";
+                    echo "<p>Availability Zone: " . $az . "</p>";
+                    ?>
+                </div>
+            </body>
+            </html>
+            EOF
+            
+            # Set proper permissions
+            chown -R apache:apache /var/www/html
+            chmod -R 755 /var/www/html
+            
+            # Restart Apache to apply changes
+            systemctl restart httpd
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref MainVPC
+
+  ALBDNSName:
+    Description: DNS Name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  RDSEndpoint:
+    Description: RDS Database Endpoint
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  S3BucketName:
+    Description: Name of S3 Bucket for static content
+    Value: !Ref StaticContentBucket
+
+  S3WebsiteURL:
+    Description: URL of S3 Static Website
+    Value: !GetAtt StaticContentBucket.WebsiteURL
