@@ -1,0 +1,332 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  This template creates a 3-tier web application infrastructure including VPC, EC2, ALB, 
+  S3, and CloudFront (commented). Perfect for learning AWS architecture concepts.
+
+Parameters:
+  # VPC Configuration Parameters
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for the VPC
+  
+  # EC2 Configuration Parameters
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: EC2 instance type for web and app servers
+    
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair for SSH access
+
+Resources:
+  #############################################
+  # VPC and Networking Components
+  # This section creates:
+  # 1. VPC with DNS support
+  # 2. Internet Gateway
+  # 3. Public, Private, and Database Subnets
+  # 4. Route Tables and associations
+  #############################################
+  MainVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: Main VPC
+
+  # Internet Gateway for public internet access
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MainVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet 1 in AZ1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+
+  # Private Subnet 1 for Application tier
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private Subnet 1
+
+  # Database Subnet 1
+  DBSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: DB Subnet 1
+
+  # NAT Gateway and EIP for private subnet internet access
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MainVPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MainVPC
+      Tags:
+        - Key: Name
+          Value: Private Route Table
+
+  # Routes
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  # Route Table Associations
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  #############################################
+  # Security Groups
+  # Creating security groups for:
+  # 1. ALB (allows HTTP from anywhere)
+  # 2. Web tier (allows traffic from ALB)
+  # 3. App tier (allows traffic from web tier)
+  # 4. DB tier (allows traffic from app tier)
+  #############################################
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  WebTierSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Web Tier
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  #############################################
+  # Application Load Balancer
+  # Creates:
+  # 1. ALB
+  # 2. Target Group
+  # 3. Listener
+  #############################################
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref PublicSubnet1
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: Web Application ALB
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref MainVPC
+      Port: 80
+      Protocol: HTTP
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  #############################################
+  # S3 Bucket for Static Content
+  # Creates:
+  # 1. S3 Bucket
+  # 2. Bucket Policy for public read access
+  #############################################
+  StaticContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-static-content
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+
+  StaticContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticContentBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${StaticContentBucket}/*
+
+  #############################################
+  # CloudFront Distribution (Commented)
+  # Uncomment this section to demonstrate CDN capabilities
+  #############################################
+  # CloudFrontDistribution:
+  #   Type: AWS::CloudFront::Distribution
+  #   Properties:
+  #     DistributionConfig:
+  #       Enabled: true
+  #       DefaultCacheBehavior:
+  #         TargetOriginId: S3Origin
+  #         ViewerProtocolPolicy: redirect-to-https
+  #         AllowedMethods:
+  #           - GET
+  #           - HEAD
+  #         CachedMethods:
+  #           - GET
+  #           - HEAD
+  #         ForwardedValues:
+  #           QueryString: false
+  #           Cookies:
+  #             Forward: none
+  #       Origins:
+  #         - DomainName: !GetAtt StaticContentBucket.DomainName
+  #           Id: S3Origin
+  #           S3OriginConfig:
+  #             OriginAccessIdentity: ''
+  #       PriceClass: PriceClass_100
+
+  #############################################
+  # EC2 Instance for Web Tier
+  # Creates:
+  # 1. Launch Template
+  # 2. Auto Scaling Group
+  #############################################
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2 AMI ID (update as needed)
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref WebTierSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd
+            systemctl start httpd
+            systemctl enable httpd
+            echo "<h1>Hello from Web Tier!</h1>" > /var/www/html/index.html
+
+  WebServerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLaunchTemplate
+        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      Tags:
+        - Key: Name
+          Value: Web Server
+          PropagateAtLaunch: true
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref MainVPC
+
+  ALBDNSName:
+    Description: DNS Name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  S3BucketName:
+    Description: Name of S3 Bucket for static content
+    Value: !Ref StaticContentBucket
+
+  S3WebsiteURL:
+    Description: URL of S3 Static Website
+    Value: !GetAtt StaticContentBucket.WebsiteURL
