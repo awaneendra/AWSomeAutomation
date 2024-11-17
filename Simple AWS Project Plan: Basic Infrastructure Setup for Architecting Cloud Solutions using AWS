@@ -1,0 +1,98 @@
+Simple AWS Project Plan: Basic Infrastructure Setup
+
+This project will guide you through setting up a simple, secure, and functional AWS environment. The steps cover core AWS concepts like EC2, VPC, subnets, security groups, network access control lists (NACLs), VPC routing tables, elastic load balancers, and S3 buckets. This should not take more than 3 hours to complete. 
+
+Objective:
+
+To build and understand a basic AWS infrastructure by creating and connecting key AWS services. The end goal is to deploy a web server (on EC2) accessible through an Elastic Load Balancer and store static assets in an S3 bucket.
+
+Project Overview:
+    Create and configure a VPC
+    Set up subnets (public and private)
+    Implement security groups and NACLs
+    Create and configure VPC routing tables
+    Launch an EC2 instance
+    Set up an Elastic Load Balancer (ELB)
+    Create and interact with an S3 bucket
+
+Detailed Steps:
+
+Step 1: Create a VPC
+
+    Go to the VPC Console in AWS Management Console.
+    Create a new VPC with:
+        CIDR block: 10.0.0.0/16.
+    Name the VPC for easy identification (e.g., MyFirstVPC).
+
+Step 2: Set Up Subnets
+
+    Create two subnets:
+        Public Subnet: 10.0.1.0/24.
+        Private Subnet: 10.0.2.0/24.
+    Associate the public subnet with a route table that has internet access.
+    Associate the private subnet with a route table that does not provide internet access.
+
+Step 3: Configure Security Groups and NACLs
+
+    Security Groups:
+        Create a security group for the EC2 instance to allow:
+            SSH (Port 22) from your IP.
+            HTTP (Port 80) from anywhere.
+        Attach the security group to your EC2 instance.
+    Network ACLs:
+        Configure an NACL for the public subnet to allow incoming and outgoing HTTP and SSH traffic.
+        Restrict the private subnet to block public traffic.
+
+Step 4: Set Up VPC Routing Tables
+
+    Create a route table for the public subnet:
+        Add a route to the internet gateway (IGW).
+    Use the main route table for the private subnet:
+        No internet access.
+
+Step 5: Launch an EC2 Instance
+
+    Launch an EC2 instance in the public subnet:
+        Choose Amazon Linux 2 AMI.
+        Instance type: t2.micro (free tier eligible).
+        Key pair: Create or use an existing one.
+    Install a web server:
+        SSH into the instance.
+        Run commands:
+        sudo yum update -y
+        sudo yum install httpd -y
+        sudo systemctl start httpd
+        sudo systemctl enable httpd
+        echo "Welcome to My First AWS Project!" | sudo tee /var/www/html/index.html
+
+Step 6: Configure an Elastic Load Balancer
+
+    Create an Application Load Balancer:
+        Type: Internet-facing.
+        Attach the public subnet.
+    Create a target group and register your EC2 instance.
+    Add a listener for HTTP (Port 80) that forwards traffic to the target group.
+
+Step 7: Create and Use an S3 Bucket
+
+    Create an S3 bucket:
+        Name: my-first-aws-bucket.
+        Region: Same as your VPC.
+    Enable public access to the bucket.
+    Upload a sample HTML file (e.g., index.html).
+    Access the file using the bucket URL to confirm functionality.
+
+Validation
+
+    Test the web server:
+        Access the EC2 instance directly using its public IP.
+        Access the website through the Elastic Load Balancer.
+    Verify the S3 bucket:
+        Access and download the uploaded file using the public URL.
+
+Learning Outcomes
+
+    Understand core AWS concepts: EC2, VPC, subnets, routing, and security.
+    Learn to configure security groups, NACLs, and routing tables.
+    Deploy and test a basic web application.
+    Gain hands-on experience with S3 for static content storage.
