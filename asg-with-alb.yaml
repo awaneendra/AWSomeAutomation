@@ -110,7 +110,7 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        ImageId: ami-083cd2f172307f9b3
+        ImageId: ami-083cd2f172307f9b3  #####  Replace this with your AMI ID
         InstanceType: !Ref InstanceType
         KeyName: !Ref KeyName
         SecurityGroupIds: 
