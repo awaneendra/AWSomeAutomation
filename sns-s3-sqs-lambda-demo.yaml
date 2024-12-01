@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Photo Processing Workflow with SNS, SQS, Lambda'
+
+Resources:
+  # S3 Bucket for Photo Uploads
+  PhotoUploadBucket:
+    Type: AWS::S3::Bucket
+
+  # SNS Topic for Photo Upload Notifications
+  PhotoUploadTopic:
+    Type: AWS::SNS::Topic
+
+  # SQS Queue for Processing Photos
+  PhotoProcessingQueue:
+    Type: AWS::SQS::Queue
+
+  # SNS Topic Subscription to SQS
+  PhotoUploadTopicToSQSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PhotoUploadTopic
+      Protocol: sqs
+      Endpoint: !GetAtt PhotoProcessingQueue.Arn
+
+  # IAM Role for Lambda Function
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt PhotoProcessingQueue.Arn
+
+  # Lambda Function for Photo Processing
+  PhotoProcessingLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import boto3
+
+          def lambda_handler(event, context):
+              # Configure logging
+              logging.basicConfig(level=logging.INFO)
+              logger = logging.getLogger()
+
+              # Process each message from SQS
+              for record in event['Records']:
+                  # Parse the message body
+                  try:
+                      message = json.loads(record['body'])
+                      logger.info(f"Processing photo: {message}")
+                      
+                      # Simulate photo processing
+                      logger.info("Photo processing completed successfully")
+                  
+                  except Exception as e:
+                      logger.error(f"Error processing message: {str(e)}")
+                      # Optionally, you could send to a dead-letter queue
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Photo processing complete!')
+              }
+      Runtime: python3.9
+      Timeout: 30
+
+  # Lambda Event Source Mapping from SQS
+  LambdaEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt PhotoProcessingQueue.Arn
+      FunctionName: !Ref PhotoProcessingLambda
+      BatchSize: 1
+
+  # SQS Queue Policy to Allow SNS Publishing
+  SQSQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: 
+        - !Ref PhotoProcessingQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: SQS:SendMessage
+            Resource: !GetAtt PhotoProcessingQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref PhotoUploadTopic
+
+Outputs:
+  PhotoUploadBucketName:
+    Description: S3 Bucket for Photo Uploads
+    Value: !Ref PhotoUploadBucket
+  PhotoUploadTopicArn:
+    Description: SNS Topic ARN for Photo Uploads
+    Value: !Ref PhotoUploadTopic
+  PhotoProcessingQueueUrl:
+    Description: SQS Queue URL for Photo Processing
+    Value: !GetAtt PhotoProcessingQueue.QueueUrl
+
+
+
+  ##### Below is the SNS Access policy which you need to apply on SNS topic
+
+  {
+  "Version": "2008-10-17",
+  "Id": "__default_policy_ID",
+  "Statement": [
+    {
+      "Sid": "__default_statement_ID",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "*"
+      },
+      "Action": [
+        "SNS:GetTopicAttributes",
+        "SNS:SetTopicAttributes",
+        "SNS:AddPermission",
+        "SNS:RemovePermission",
+        "SNS:DeleteTopic",
+        "SNS:Subscribe",
+        "SNS:ListSubscriptionsByTopic",
+        "SNS:Publish"
+      ],
+      "Resource": "arn:aws:sns:us-east-1:<123456789012>:photo-processing-workflow-PhotoUploadTopic-cXddd4Jod3Ow",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceOwner": "<123456789012>"
+        }
+      }
+    },
+    {
+      "Sid": "AllowS3Publish",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "s3.amazonaws.com"
+      },
+      "Action": "SNS:Publish",
+      "Resource": "arn:aws:sns:us-east-1:<123456789012>:photo-processing-workflow-PhotoUploadTopic-cXddd4Jod3Ow",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceAccount": "<123456789012>"
+        },
+        "ArnLike": {
+          "AWS:SourceArn": "arn:aws:s3:::*"
+        }
+      }
+    }
+  ]
+}
