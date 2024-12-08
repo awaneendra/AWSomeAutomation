@@ -1,0 +1,368 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Serverless Website Demo with AWS Services (Free Tier Friendly)'
+
+Parameters:
+  WebsiteBucketName:
+    Type: String
+    Description: Unique name for the S3 bucket hosting the website
+    Default: my-serverless-website-demo
+
+Resources:
+  # S3 Bucket for Static Website Hosting
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref WebsiteBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+
+  # S3 Bucket Policy to make the website publicly readable
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: 
+              - !Sub "${WebsiteBucket.Arn}/*"
+
+  # Lambda Function for Backend Operations
+  WebsiteFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref WebsiteDataTable
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamodb = new AWS.DynamoDB.DocumentClient();
+
+          exports.handler = async (event) => {
+            try {
+              // Parse incoming request
+              const body = JSON.parse(event.body);
+              
+              // Determine operation type
+              if (body.action === 'save') {
+                // Save new entry to DynamoDB
+                const params = {
+                  TableName: process.env.DYNAMODB_TABLE,
+                  Item: {
+                    id: new Date().toISOString(),
+                    message: body.message,
+                    timestamp: new Date().toISOString()
+                  }
+                };
+                await dynamodb.put(params).promise();
+                return {
+                  statusCode: 200,
+                  headers: {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Content-Type"
+                  },
+                  body: JSON.stringify({ message: 'Entry saved successfully' })
+                };
+              } else if (body.action === 'list') {
+                // List entries from DynamoDB
+                const params = {
+                  TableName: process.env.DYNAMODB_TABLE
+                };
+                const result = await dynamodb.scan(params).promise();
+                return {
+                  statusCode: 200,
+                  headers: {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Content-Type"
+                  },
+                  body: JSON.stringify(result.Items)
+                };
+              }
+            } catch (error) {
+              return {
+                statusCode: 500,
+                headers: {
+                  "Access-Control-Allow-Origin": "*"
+                },
+                body: JSON.stringify({ error: error.message })
+              };
+            }
+          };
+
+  # IAM Role for Lambda Execution
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !GetAtt WebsiteDataTable.Arn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # API Gateway to expose Lambda Function
+  WebsiteApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ServerlessWebsiteApi
+      Description: API Gateway for Serverless Website Demo
+
+  # API Gateway Resource
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WebsiteApi
+      ParentId: !GetAtt WebsiteApi.RootResourceId
+      PathPart: 'data'
+
+  # API Gateway Method
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebsiteApi
+      ResourceId: !Ref ApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunction}/invocations
+          - LambdaFunction: !GetAtt WebsiteFunction.Arn
+
+  # OPTIONS Method for CORS
+  ApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebsiteApi
+      ResourceId: !Ref ApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Lambda Permission for API Gateway
+  ApiGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebsiteFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsiteApi}/*/POST/data"
+
+  # Deploy API Stage
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - ApiMethod
+      - ApiOptionsMethod
+    Properties:
+      RestApiId: !Ref WebsiteApi
+      StageName: prod
+
+  # DynamoDB Table for Storing Messages
+  WebsiteDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ServerlessWebsiteMessages
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+Outputs:
+  WebsiteURL:
+    Description: URL of the S3 Hosted Website
+    Value: !GetAtt WebsiteBucket.WebsiteURL
+
+  ApiEndpoint:
+    Description: API Gateway Endpoint
+    Value: !Sub "https://${WebsiteApi}.execute-api.${AWS::Region}.amazonaws.com/prod/data"
+
+
+
+    ############### index.html ###############
+
+
+    <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Serverless Message Board</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        #message-form {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        #messages {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        input, button {
+            margin: 10px 0;
+            padding: 10px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .message-item {
+            border-bottom: 1px solid #eee;
+            padding: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="message-form">
+        <h2>Send a Message</h2>
+        <input type="text" id="messageInput" placeholder="Enter your message">
+        <button onclick="saveMessage()">Send Message</button>
+    </div>
+
+    <div id="messages">
+        <h2>Message Board</h2>
+        <div id="messageList"></div>
+    </div>
+
+    <script>
+        // Replace with your actual API Gateway endpoint
+        const API_ENDPOINT = 'https://h3khc1byyk.execute-api.us-east-1.amazonaws.com/prod/data';
+
+        async function saveMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+
+            if (!message) {
+                alert('Please enter a message');
+                return;
+            }
+
+            try {
+                const response = await fetch(API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'save',
+                        message: message
+                    })
+                });
+
+                if (response.ok) {
+                    messageInput.value = '';
+                    await loadMessages(); // Refresh messages
+                } else {
+                    throw new Error('Failed to save message');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to send message');
+            }
+        }
+
+        async function loadMessages() {
+            try {
+                const response = await fetch(API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'list'
+                    })
+                });
+
+                if (response.ok) {
+                    const messages = await response.json();
+                    const messageList = document.getElementById('messageList');
+                    messageList.innerHTML = ''; // Clear previous messages
+
+                    messages
+                        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                        .forEach(msg => {
+                            const messageDiv = document.createElement('div');
+                            messageDiv.classList.add('message-item');
+                            messageDiv.innerHTML = `
+                                <strong>Message:</strong> ${msg.message}<br>
+                                <small>Sent at: ${new Date(msg.timestamp).toLocaleString()}</small>
+                            `;
+                            messageList.appendChild(messageDiv);
+                        });
+                } else {
+                    throw new Error('Failed to load messages');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to load messages');
+            }
+        }
+
+        // Load messages when page loads
+        loadMessages();
+    </script>
+</body>
+</html>
+
+
+
+######Comment: The CF template above creates and deploys a Lambda fucntion which is based on Nodejs 18 which doesn;t include AWS SDK. 
+
+####### This will throw an error. Please extract the Lambda and rebuild buy adding aws sdk using npm
