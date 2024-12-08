@@ -1,0 +1,218 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS CloudFormation template to create an end-to-end demo using Amazon Kinesis Data Streams,
+  AWS Lambda, and Amazon S3, all within the AWS Free Tier.
+
+Parameters:
+  StackName:
+    Type: String
+    Default: KinesisDemoStack
+    Description: Name of the CloudFormation stack
+
+Resources:
+  # S3 Bucket to store processed data
+  KinesisDemoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${StackName}-s3-bucket'
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${StackName}-s3-bucket'
+
+  # Kinesis Data Stream
+  KinesisDataStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${StackName}-data-stream'
+      ShardCount: 1  # Free tier allows up to 5 shards
+      RetentionPeriodHours: 24
+
+  # IAM Role for Producer Lambda
+  ProducerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackName}-producer-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: ProducerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:PutRecord
+                  - kinesis:PutRecords
+                Resource: !GetAtt KinesisDataStream.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # Producer Lambda Function
+  ProducerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${StackName}-producer'
+      Handler: index.handler
+      Role: !GetAtt ProducerLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import datetime
+
+          kinesis = boto3.client('kinesis')
+          STREAM_NAME = '${KinesisDataStream.Name}'
+
+          def handler(event, context):
+              data = {
+                  'timestamp': str(datetime.datetime.utcnow()),
+                  'message': 'Hello from Lambda!'
+              }
+              partition_key = 'partitionkey'
+              response = kinesis.put_record(
+                  StreamName=STREAM_NAME,
+                  Data=json.dumps(data),
+                  PartitionKey=partition_key
+              )
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Record sent to Kinesis')
+              }
+
+      Environment:
+        Variables:
+          STREAM_NAME: !Ref KinesisDataStream
+
+  # CloudWatch Event to trigger Producer Lambda every 5 minutes
+  ProducerLambdaSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Trigger Producer Lambda every 5 minutes"
+      ScheduleExpression: "rate(5 minutes)"
+      Targets:
+        - Arn: !GetAtt ProducerLambdaFunction.Arn
+          Id: "ProducerLambdaTarget"
+
+  # Permission for EventBridge to invoke Producer Lambda
+  ProducerLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProducerLambdaFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ProducerLambdaSchedule.Arn
+
+  # IAM Role for Consumer Lambda
+  ConsumerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackName}-consumer-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: ConsumerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                  - kinesis:ListStreams
+                Resource: !GetAtt KinesisDataStream.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${KinesisDemoBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # Consumer Lambda Function
+  ConsumerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${StackName}-consumer'
+      Handler: index.handler
+      Role: !GetAtt ConsumerLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+
+          s3 = boto3.client('s3')
+          def handler(event, context):
+              for record in event['Records']:
+                  # Kinesis data is base64 encoded
+                  payload = record["kinesis"]["data"]
+                  decoded_payload = json.loads(payload)
+                  timestamp = decoded_payload['timestamp']
+                  message = decoded_payload['message']
+                  # Save to S3
+                  s3.put_object(
+                      Bucket='${KinesisDemoBucket}',
+                      Key=f'data/{timestamp}.json',
+                      Body=json.dumps(decoded_payload)
+                  )
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Records processed and stored in S3')
+              }
+
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref KinesisDemoBucket
+
+  # Kinesis Stream to Lambda Consumer Event Source Mapping
+  ConsumerEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt KinesisDataStream.Arn
+      FunctionName: !GetAtt ConsumerLambdaFunction.Arn
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 100
+      Enabled: true
+
+Outputs:
+  KinesisDataStreamName:
+    Description: "Name of the Kinesis Data Stream"
+    Value: !Ref KinesisDataStream
+
+  ProducerLambdaFunctionName:
+    Description: "Name of the Producer Lambda Function"
+    Value: !Ref ProducerLambdaFunction
+
+  ConsumerLambdaFunctionName:
+    Description: "Name of the Consumer Lambda Function"
+    Value: !Ref ConsumerLambdaFunction
+
+  S3BucketName:
+    Description: "Name of the S3 bucket storing processed data"
+    Value: !Ref KinesisDemoBucket
