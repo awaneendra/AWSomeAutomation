@@ -1,0 +1,191 @@
+####### First run this template to create base setup 
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Simple CloudFormation template to set up AWS Athena environment,
+  including S3 buckets and Glue Data Catalog.
+
+Resources:
+
+  # S3 Bucket to store sales data
+  SalesDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'athena-sample-data-${AWS::AccountId}'
+      AccessControl: Private
+
+  # S3 Bucket to store Athena query results
+  AthenaQueryResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'athena-query-results-${AWS::AccountId}'
+      AccessControl: Private
+
+  # Glue Database
+  AthenaDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: sales_db
+        Description: Database for sales data
+
+  # Glue Table
+  SalesTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AthenaDatabase
+      TableInput:
+        Name: sales
+        Description: Table for sales data stored in S3
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: csv
+          skip.header.line.count: '1'
+        StorageDescriptor:
+          Columns:
+            - Name: order_id
+              Type: int
+            - Name: customer_name
+              Type: string
+            - Name: product
+              Type: string
+            - Name: quantity
+              Type: int
+            - Name: price
+              Type: double
+            - Name: order_date
+              Type: string  # Changed to string to prevent type errors
+          Location: !Sub 's3://${SalesDataBucket}/'
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.OpenCSVSerde
+            Parameters:
+              separatorChar: ','
+              quoteChar: '"'
+
+Outputs:
+  SalesDataBucketName:
+    Description: "S3 Bucket for Sales Data"
+    Value: !Ref SalesDataBucket
+
+  AthenaQueryResultsBucketName:
+    Description: "S3 Bucket for Athena Query Results"
+    Value: !Ref AthenaQueryResultsBucket
+
+  GlueDatabaseName:
+    Description: "Glue Database Name"
+    Value: !Ref AthenaDatabase
+
+  GlueTableName:
+    Description: "Glue Table Name"
+    Value: !Ref SalesTable
+
+
+##### After stack is created upload below file in the dataset bucket created by CFT above: 
+
+order_id,customer_name,product,category,quantity,price,order_date
+1001,John Doe,Apple MacBook Pro,Laptops,2,1299.99,2024-01-15
+1002,Jane Smith,Samsung Galaxy S21,Smartphones,1,799.99,2024-01-17
+1003,Bob Johnson,Dell XPS 13,Laptops,1,999.99,2024-01-20
+1004,Alice Williams,Sony WH-1000XM4,Headphones,3,349.99,2024-01-22
+1005,Chris Evans,Apple iPad Pro,Tablets,2,799.99,2024-01-25
+1006,Emily Clark,Google Pixel 6,Smartphones,1,599.99,2024-01-28
+1007,Michael Brown,HP Envy 15,Laptops,1,1099.99,2024-02-01
+1008,Sarah Davis,Bose QuietComfort 35 II,Headphones,2,299.99,2024-02-03
+1009,David Wilson,Microsoft Surface Pro 7,Tablets,1,749.99,2024-02-05
+1010,Linda Martinez,Apple AirPods Pro,Accessories,4,249.99,2024-02-07
+
+
+
+#### Finally update your stack with following CFT: 
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation template to update AWS Glue table schema for AWS Athena,
+  ensuring correct data types without recreating existing S3 buckets or other resources.
+
+Resources:
+
+  # S3 Bucket to store sales data (Existing Resource)
+  SalesDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'athena-sample-data-${AWS::AccountId}'
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+
+  # S3 Bucket to store Athena query results (Existing Resource)
+  AthenaQueryResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'athena-query-results-${AWS::AccountId}'
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+
+  # Glue Database (Existing Resource)
+  AthenaDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: sales_db
+        Description: Database for enhanced sales data
+
+  # Glue Table (Updated Resource)
+  SalesTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AthenaDatabase
+      TableInput:
+        Name: sales
+        Description: Updated table for sales data with correct schema
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: csv
+          skip.header.line.count: '1'
+        StorageDescriptor:
+          Columns:
+            - Name: order_id
+              Type: int
+            - Name: customer_name
+              Type: string
+            - Name: product
+              Type: string
+            - Name: category
+              Type: string    # Corrected from long/int to string
+            - Name: quantity
+              Type: int
+            - Name: price
+              Type: double
+            - Name: order_date
+              Type: string      # Kept as string to prevent parsing issues
+          Location: !Sub 's3://${SalesDataBucket}/'
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.OpenCSVSerde
+            Parameters:
+              separatorChar: ','
+              quoteChar: '"'
+
+Outputs:
+  SalesDataBucketName:
+    Description: "S3 Bucket for Sales Data"
+    Value: !Ref SalesDataBucket
+
+  AthenaQueryResultsBucketName:
+    Description: "S3 Bucket for Athena Query Results"
+    Value: !Ref AthenaQueryResultsBucket
+
+  GlueDatabaseName:
+    Description: "Glue Database Name"
+    Value: !Ref AthenaDatabase
+
+  GlueTableName:
+    Description: "Glue Table Name"
+    Value: !Ref SalesTable
